@@ -12,6 +12,13 @@ The system combines **Multimodal RAG**, **Agentic AI via LangGraph**, and a **Fi
 
 ---
 
+## Agent Graph
+<p>
+<img href="agents.png">
+</p>
+
+---
+
 ## Features
 
 | Category | Capabilities |
@@ -227,17 +234,7 @@ Research QA Model
 | **Method** | QLoRA |
 | **Framework** | Unsloth + PEFT |
 
----
 
-## Roadmap
-
-- [ ] Citation generation
-- [ ] Multi-paper comparison
-- [ ] Research paper recommendation
-- [ ] Knowledge graph construction
-- [ ] Audio research assistant
-- [ ] Local LLM support via Ollama
-- [ ] Research report generation
 
 ---
 
