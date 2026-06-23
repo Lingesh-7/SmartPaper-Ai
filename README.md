@@ -14,7 +14,7 @@ The system combines **Multimodal RAG**, **Agentic AI via LangGraph**, and a **Fi
 
 ## Agent Graph
 <p align="center">
-  <img src="agents.png" width="600"/>
+  <img src="agents.png" width="300"/>
 </p>
 
 ---
