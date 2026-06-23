@@ -142,7 +142,7 @@ SmartPaper-AI/
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/Lingesh-7/Research-QA
+git clone https://github.com/Lingesh-7/SmartPaper-Ai
 cd smartpaper-ai
 ```
 
