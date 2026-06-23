@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SmartPaper AI</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="app-shell">
+        <header class="app-header">
+            <h1>SmartPaper AI</h1>
+            <p class="subtitle">Multimodal Research Paper Q&amp;A Assistant</p>
+        </header>
+
+        <div class="panels">
+            <aside class="panel panel-left">
+                <h2>Upload Paper</h2>
+                <div id="drop-zone" class="drop-zone">
+                    <p>Drag &amp; drop a PDF here, or click to browse</p>
+                    <input type="file" id="file-input" accept="application/pdf" hidden>
+                </div>
+                <div id="upload-status" class="status-text"></div>
+
+                <div id="metadata-card" class="metadata-card hidden">
+                    <h3>Paper Loaded</h3>
+                    <p><span id="meta-chunks">0</span> text chunks</p>
+                    <p><span id="meta-images">0</span> images</p>
+                    <p><span id="meta-tables">0</span> tables</p>
+                </div>
+
+                <button id="summary-btn" class="btn" disabled>Generate Summary</button>
+            </aside>
+
+            <main class="panel panel-center">
+                <h2>Chat</h2>
+                <div id="chat-window" class="chat-window"></div>
+                <div class="chat-input-row">
+                    <input type="text" id="question-input" placeholder="Ask a question about the paper..." disabled>
+                    <button id="send-btn" class="btn" disabled>Send</button>
+                </div>
+            </main>
+
+            <aside class="panel panel-right">
+                <h2>Summary</h2>
+                <div id="summary-content" class="summary-content">
+                    <p class="placeholder-text">Upload a paper and click "Generate Summary" to see an overview here.</p>
+                </div>
+            </aside>
+        </div>
+    </div>
+    <footer>
+        © 2026 Lingesh R | AI & Machine Learning Engineer. All Rights Reserved.
+    </footer>
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>
