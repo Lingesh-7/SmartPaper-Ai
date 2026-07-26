@@ -56,7 +56,7 @@ The system combines **Multimodal RAG**, **Agentic AI via LangGraph**, and a **Fi
               └─────────┬──────------───┘
                         │
                         ▼
-               BGE Embeddings
+                   Embeddings
                         │
                         ▼
                    ChromaDB
