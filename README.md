@@ -12,7 +12,7 @@ short_description: Ask questions about a research paper, with page citations
 
 # SmartPaper AI
 
-**Live app:** https://huggingface.co/spaces/LINGESH-7/AI-RESEARCH-PAPER-QA
+**Live app:** https://huggingface.co/spaces/LINGESH-7/AI-RESEARCH-PAPER-QA  
 **Fine-tuned model:** https://huggingface.co/LINGESH-7/Phi-3-mini-4k-instruct-FT-ON-QASPER
 
 > Upload a research paper, ask questions in plain language, and get answers grounded in the paper's text, tables **and** figures — each one citing the page it came from.
@@ -90,8 +90,8 @@ The retrieval pattern is **multi-vector**: *summaries* are what gets embedded an
 Requires Python 3.13, [uv](https://docs.astral.sh/uv/), and for PDF parsing `tesseract` (and `poppler`) on your PATH.
 
 ```bash
-git clone https://github.com/Lingesh-7/Research-QA
-cd Research-QA
+git clone https://github.com/Lingesh-7/SmartPaper-Ai
+cd SmartPaper-Ai
 
 uv sync                       # install dependencies from uv.lock
 cp .env.example .env          # optional: put your three keys in .env
