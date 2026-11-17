@@ -2,7 +2,8 @@
 
 > Upload a research paper. Ask questions in plain language. Get answers grounded in the paper's text, tables **and** figures, each one citing the page it came from.
 
-**Live app:** https://smart-paper-ai-lingesh.streamlit.app/ 
+**Live app:** https://smart-paper-ai-lingesh.streamlit.app/  
+
 **Fine-tuned model:** https://huggingface.co/LINGESH-7/Phi-3-mini-4k-instruct-FT-ON-QASPER
 
 A multimodal RAG assistant with an agentic LangGraph workflow, built with **Streamlit**, **LangChain**, **ChromaDB** and **Unstructured**. Every visitor uses their own API keys, so the app costs nothing to host.
