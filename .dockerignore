@@ -1,0 +1,25 @@
+# Secrets - never bake keys into an image.
+.env
+.env.*
+!.env.example
+
+# Local state and caches
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+data
+chroma_db
+extracted_data
+uploads
+
+# Not needed at runtime
+tests
+test_pipeline.py
+*.ipynb
+*.pdf
+uv.lock
+.claude
+CLAUDE.md

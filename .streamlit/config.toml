@@ -1,0 +1,23 @@
+# Streamlit settings shared by every way of running the app: locally,
+# on Streamlit Community Cloud, and in the Docker image.
+#
+# Port and bind address are deliberately NOT set here: Community Cloud
+# and the Dockerfile each supply their own, and a value in this file
+# could fight with the host's.
+
+[server]
+headless = true
+# Must match config.MAX_UPLOAD_MB (default 20).
+maxUploadSize = 20
+# Streamlit's file watcher would otherwise walk torch/transformers on
+# every start; the app is not edited while it serves visitors.
+fileWatcherType = "none"
+
+[browser]
+gatherUsageStats = false
+
+[theme.light]
+primaryColor = "#4F46E5"
+
+[theme.dark]
+primaryColor = "#818CF8"

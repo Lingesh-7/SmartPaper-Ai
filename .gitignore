@@ -5,6 +5,8 @@ __pycache__/
 # Virtual env
 .env
 *.ipynb
+# ...except the fine-tuning notebook, which documents how the Phi-3 reader was trained
+!FT-For-RQA.ipynb
 .venv/
 venv/
 
@@ -31,3 +33,8 @@ extracted_data/
 tmp/
 
 uploads/
+# App data (ingested papers, vectors, temp uploads)
+data/
+
+# Test / tool caches
+.pytest_cache/

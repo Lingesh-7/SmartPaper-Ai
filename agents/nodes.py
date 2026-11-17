@@ -1,52 +1,151 @@
 """
 LangGraph agent nodes for SmartPaper AI.
 
-Four nodes: planner (classifies query type), retriever (fetches
-context via embeddings.retriever), reasoner (generates an answer,
-routing to a vision model when images are present), and critic
-(accepts the answer or triggers a retry, up to 2 retries).
+Five nodes: contextualizer (rewrites a follow-up into a standalone
+question), planner (classifies query type), retriever (fetches context
+via embeddings.retriever), reasoner (generates an answer, routing to a
+vision model when images are present), and critic (accepts the answer
+or triggers a retry, up to 2 retries).
 
 This mirrors the validated notebook logic from the LangGraph Agent
-section, with one structural change: the original notebook reused a
-single module-level `llm` variable that got reassigned three separate
-times across the notebook (table summaries -> text summaries -> agent
-reasoning), which only works because notebook cells run in a fixed
-order. Here, the agent's text LLM and vision LLM are each given their
-own explicitly named client, created once at module import time
-(rather than on every reasoner_node call, which the notebook version
-did unnecessarily).
+section, with these structural changes:
+
+- The original notebook reused a single module-level `llm` variable
+  that got reassigned three separate times across the notebook (table
+  summaries -> text summaries -> agent reasoning), which only works
+  because notebook cells run in a fixed order. Here the agent's text
+  LLM and vision LLM are separate, explicitly named clients
+  (clients.agent_llm, clients.agent_vision_llm).
+- Those clients are passed into the nodes rather than created at
+  module import. Every visitor brings their own API keys, so a client
+  created at import would answer everyone's questions on one person's
+  key. agents/graph.py binds the clients by closure, the same way it
+  binds the paper's retriever.
+- state["context"] is the list of retrieved records, each with its
+  type and page number, rather than {"texts": [...], "images": [...]}.
+  The reasoner labels every piece of context with its page so the
+  model can cite it, and the records are returned to the UI as the
+  answer's sources.
+- The paper's title, authors and abstract are added to the context of
+  every question, and a retry searches wider than the attempt before
+  it. Both come from watching real questions fail: "who wrote this
+  paper?" retrieved the reference list, and retrying a rejected
+  answer with the identical context produced the identical answer.
+- The contextualizer is new. Without it every question is answered in
+  isolation, so "explain that further" retrieves nothing useful.
+- The planner's classification now steers retrieval and reasoning. It
+  used to be informational only, so a question about a table could be
+  answered from four text passages with no table among them. Now a
+  table_query is guaranteed the paper's best-matching tables and a
+  figure_query its best-matching figures (embeddings/retriever.py),
+  the reasoner is told to answer from them, and for a table_query it
+  is also shown the table's image: unstructured's text dump of a
+  table loses the row/column structure that the numbers depend on.
+- The vision model is used ONLY for figure and table questions, and a
+  failed vision call falls back to the text model. Gemini's free tier
+  allows about 20 requests per day. Before, any figure that happened
+  to be retrieved - even for "what datasets were used?" - turned the
+  answer into a vision request, and once the allowance was gone every
+  such question failed. Now a text question never retrieves a figure,
+  and when the vision model is unavailable the question is answered
+  from captions, the text read inside the figures, and the tables'
+  text, with the answer marked as such (state["vision_fallback"]).
 """
 
+import logging
+
 from langchain_core.messages import HumanMessage
-from langchain_groq import ChatGroq
-from langchain_google_genai import ChatGoogleGenerativeAI
 
 import config
-from embeddings.retriever import retrieve
+from embeddings.retriever import front_matter, prepare_image_for_llm, retrieve
+from models.llm_clients import LLMClients, message_text
 
-# --- LLM clients, created once at import time ---
-agent_llm = ChatGroq(
-    model=config.AGENT_LLM_MODEL,
-    temperature=config.AGENT_LLM_TEMPERATURE,
-)
-
-agent_vision_llm = ChatGoogleGenerativeAI(
-    model=config.AGENT_VISION_MODEL,
-    google_api_key=config.GOOGLE_API_KEY,
-    temperature=0,
-)
+logger = logging.getLogger("smartpaper.agent")
 
 VALID_RETRIEVAL_TYPES = {"text_query", "figure_query", "table_query"}
 
 REFUSAL_PHRASES = [
+    # The reasoner's prompt says "If the information is insufficient,
+    # say so clearly" - so this is the wording a refusal usually takes.
+    "insufficient information", "insufficient context",
     "not enough", "cannot answer", "i don't know", "no information",
     "does not provide", "does not mention", "does not contain",
     "doesn't provide", "doesn't mention", "doesn't contain",
     "not provided in", "not available in the", "no mention of",
 ]
 
+# Citations are written "(page 4)", never "(p. 4)": critic_node counts
+# sentences by splitting on ".", and an abbreviation with a period
+# would make every cited answer look long enough.
+_CITATION_RULE = (
+    "Each piece of context is labelled with the page it comes from. "
+    "When you use one, cite it in the form (page N). "
+    "Only cite page numbers that appear in the labels."
+)
 
-def planner_node(state: dict) -> dict:
+_HISTORY_CHARS_PER_MESSAGE = 600
+
+# Which kind of record a classified question must be answered from.
+_PREFERRED_RECORD_TYPE = {"table_query": "table", "figure_query": "image"}
+
+_FOCUS_RULE = {
+    "table_query": (
+        "The question is about a table. Base your answer on the table(s) provided, "
+        "reading values from the table image when one is given. "
+        "Refer to a table by its number when it has one. "
+    ),
+    "figure_query": (
+        "The question is about a figure. Base your answer on the figure(s) provided. "
+        "Refer to a figure by its number when it has one. "
+    ),
+}
+
+
+def contextualizer_node(state: dict, clients: LLMClients) -> dict:
+    """
+    Rewrite a follow-up question into a standalone one using the chat
+    history. With no history (the first question) this is a no-op and
+    makes no LLM call. Any failure falls back to the question as asked.
+    """
+    question = state["question"]
+    state["original_question"] = question
+    state["standalone_question"] = question
+
+    history = (state.get("chat_history") or [])[-config.HISTORY_MESSAGES:]
+    if not history:
+        return state
+
+    transcript = "\n".join(
+        f"{'User' if turn.get('role') == 'user' else 'Assistant'}: "
+        f"{str(turn.get('content', ''))[:_HISTORY_CHARS_PER_MESSAGE]}"
+        for turn in history
+    )
+    prompt = (
+        "Below is a conversation about a research paper, followed by a new question.\n"
+        "Rewrite the new question so that it can be understood without the conversation, "
+        "replacing words like 'it', 'that' or 'this' with what they refer to.\n"
+        "If the new question is already self-contained, return it unchanged.\n"
+        "Do not answer the question. Respond with ONLY the rewritten question.\n\n"
+        f"Conversation:\n{transcript}\n\n"
+        f"New question: {question}\n\n"
+        "Rewritten question:"
+    )
+
+    try:
+        response = clients.agent_llm.invoke([HumanMessage(content=prompt)])
+        rewritten = message_text(response).strip().strip('"').strip()
+    except Exception as exc:  # noqa: BLE001 - a rewrite is an optimisation, never fatal
+        logger.warning("[Contextualizer] Failed, using the question as asked: %s", type(exc).__name__)
+        return state
+
+    if rewritten and len(rewritten) <= config.MAX_QUESTION_CHARS:
+        state["question"] = rewritten
+        state["standalone_question"] = rewritten
+        logger.info("[Contextualizer] Rewrote follow-up question")
+    return state
+
+
+def planner_node(state: dict, clients: LLMClients) -> dict:
     """Classify the question into text_query, figure_query, or table_query."""
     question = state["question"]
 
@@ -59,14 +158,14 @@ Question: {question}
 
 Respond with ONLY one word: text_query, figure_query, or table_query"""
 
-    response = agent_llm.invoke([HumanMessage(content=classification_prompt)])
-    retrieval_type = response.content.strip().lower()
+    response = clients.agent_llm.invoke([HumanMessage(content=classification_prompt)])
+    retrieval_type = message_text(response).strip().lower()
 
     if retrieval_type not in VALID_RETRIEVAL_TYPES:
         retrieval_type = "text_query"
 
     state["retrieval_type"] = retrieval_type
-    print(f"[Planner] Classified as: {retrieval_type}")
+    logger.info("[Planner] Classified as: %s", retrieval_type)
     return state
 
 
@@ -77,33 +176,132 @@ def retriever_node(state: dict, paper_retriever) -> dict:
     paper_retriever is the MultiVectorRetriever returned by
     embeddings.embedder.ingest_paper() for the paper currently in
     session - it is passed explicitly rather than read from global
-    state, since a Flask app may be serving multiple papers/users
+    state, since the app may be serving multiple papers/users
     concurrently and a single global retriever (as in the original
     notebook) would not be safe for that.
     """
     question = state["question"]
-    context_list = retrieve(paper_retriever, question)
+    retrieval_type = state.get("retrieval_type")
+    # A retry after the critic rejected an answer searches wider. The
+    # same search would return the same context and, mostly, the same
+    # answer.
+    widen = min(state.get("retry_count", 0) + 1, config.RETRY_WIDEN_MAX)
+    records = retrieve(
+        paper_retriever,
+        question,
+        top_k=config.RETRIEVAL_TOP_K * widen,
+        prefer_type=_PREFERRED_RECORD_TYPE.get(retrieval_type),
+        # Only a question about a figure gets figures: each one in the
+        # context costs a vision request.
+        exclude_type=None if retrieval_type == "figure_query" else "image",
+    )
 
-    texts = [c["content"] for c in context_list if c["type"] in ("text", "table")]
-    images = [c["content"] for c in context_list if c["type"] == "image"]
+    # The paper's title, authors and abstract ride along with every
+    # question (see config.FRONT_MATTER_MAX_CHARS for why).
+    found = {record["content"] for record in records}
+    records = records + [r for r in front_matter(paper_retriever) if r["content"] not in found]
 
-    state["context"] = {"texts": texts, "images": images}
-    print(f"[Retriever] Got {len(texts)} text/table chunks and {len(images)} images")
+    state["context"] = records
+    n_images = sum(1 for r in records if r["type"] == "image")
+    logger.info(
+        "[Retriever] Got %d text/table chunks and %d images",
+        len(records) - n_images, n_images,
+    )
     return state
 
 
-def reasoner_node(state: dict) -> dict:
-    """Generate a draft answer, routing to the vision LLM when images are present."""
-    question = state["question"]
-    context = state["context"]
-    formatted_texts = "\n".join(context["texts"])
+def _page_label(record: dict) -> str:
+    page = record.get("page_number")
+    if page is None:
+        return "page unknown"
+    page_end = record.get("page_end")
+    if page_end is not None and page_end != page:
+        return f"pages {page}-{page_end}"
+    return f"page {page}"
 
-    if context["images"]:
+
+def _record_name(record: dict, fallback: str) -> str:
+    """ "Figure 5" / "Table 2" when the paper numbers it, else the generic word."""
+    return record.get("label") or fallback
+
+
+def _format_text_context(records: list) -> str:
+    """
+    Join the records into one context string, each labelled with its
+    page. A figure contributes what is known about it in words - its
+    caption and the text printed inside it - so that it is part of the
+    context even when no model can look at the image.
+    """
+    blocks = []
+    for record in records:
+        if record["type"] == "image":
+            lines = [f"[{_record_name(record, 'Figure')}, {_page_label(record)}]"]
+            if record.get("caption"):
+                lines.append(record["caption"])
+            if record.get("ocr_text"):
+                lines.append(f"Text printed in the figure: {record['ocr_text']}")
+            if len(lines) > 1:
+                blocks.append("\n".join(lines))
+            continue
+        if record["type"] == "table":
+            kind = _record_name(record, "Table")
+        elif record.get("pinned"):
+            kind = "Title and abstract"
+        else:
+            kind = "Text"
+        blocks.append(f"[{kind}, {_page_label(record)}]\n{record['content']}")
+    return "\n\n".join(blocks)
+
+
+def _text_answer(question: str, formatted_texts: str, focus_rule: str, clients: LLMClients):
+    prompt = (
+        "You are a research paper assistant. "
+        "Answer ONLY using the provided context. "
+        "Provide specific details from the context. "
+        f"{focus_rule}"
+        f"{_CITATION_RULE} "
+        "If the information is insufficient, say so clearly.\n\n"
+        f"Question:\n{question}\n\n"
+        f"Context:\n{formatted_texts}"
+    )
+    return clients.agent_llm.invoke([HumanMessage(content=prompt)])
+
+
+def reasoner_node(state: dict, clients: LLMClients) -> dict:
+    """
+    Generate a draft answer. A question about a figure or a table is
+    shown the retrieved figures / the retrieved tables' snapshots by
+    the vision LLM; everything else, and any question for which the
+    vision call fails, is answered by the text LLM.
+    """
+    question = state["question"]
+    records = state["context"]
+    retrieval_type = state.get("retrieval_type")
+    formatted_texts = _format_text_context(records)
+    focus_rule = _FOCUS_RULE.get(retrieval_type, "")
+
+    # (kind, record, base64) in the order the model should see them.
+    visuals = []
+    if retrieval_type == "figure_query":
+        visuals = [("Figure", r, r["content"]) for r in records if r["type"] == "image"]
+    elif retrieval_type == "table_query":
+        visuals = [("Table", r, r["image"]) for r in records if r["type"] == "table" and r.get("image")]
+
+    response = None
+    if visuals:
         content = []
-        for image in context["images"]:
+        counters = {"Figure": 0, "Table": 0}
+        for kind, record, image_base64 in visuals:
+            counters[kind] += 1
+            name = _record_name(record, f"{kind} {counters[kind]}")
+            caption = f" {record['caption']}" if record.get("caption") else ""
+            content.append({
+                "type": "text",
+                "text": f"{name} ({_page_label(record)}):{caption}",
+            })
             content.append({
                 "type": "image_url",
-                "image_url": f"data:image/jpeg;base64,{image}",
+                "image_url": f"data:image/jpeg;base64,{prepare_image_for_llm(image_base64)}",
             })
         content.append({
             "type": "text",
@@ -112,25 +310,28 @@ def reasoner_node(state: dict) -> dict:
                 "Answer ONLY using the provided image(s) and context. "
                 "Provide specific details from figures, charts, tables, "
                 "or diagrams when available. "
+                f"{focus_rule}"
+                f"{_CITATION_RULE} "
                 "If the information is insufficient, say so clearly.\n\n"
                 f"Question:\n{question}\n\n"
                 f"Additional Context:\n{formatted_texts}"
             ),
         })
-        response = agent_vision_llm.invoke([HumanMessage(content=content)])
-    else:
-        prompt = (
-            "You are a research paper assistant. "
-            "Answer ONLY using the provided context. "
-            "Provide specific details from the context. "
-            "If the information is insufficient, say so clearly.\n\n"
-            f"Question:\n{question}\n\n"
-            f"Context:\n{formatted_texts}"
-        )
-        response = agent_llm.invoke([HumanMessage(content=prompt)])
+        try:
+            response = clients.agent_vision_llm.invoke([HumanMessage(content=content)])
+            state["vision_fallback"] = False
+        except Exception as exc:  # noqa: BLE001 - answer from text rather than not at all
+            logger.warning(
+                "[Reasoner] Vision model unavailable (%s); answering from text instead",
+                type(exc).__name__,
+            )
+            state["vision_fallback"] = True
 
-    state["draft_answer"] = response.content
-    print("[Reasoner] Draft answer generated")
+    if response is None:
+        response = _text_answer(question, formatted_texts, focus_rule, clients)
+
+    state["draft_answer"] = message_text(response)
+    logger.info("[Reasoner] Draft answer generated")
     return state
 
 
@@ -144,11 +345,11 @@ def critic_node(state: dict) -> dict:
 
     if (is_long_enough and is_not_refusal) or retry_count >= 2:
         state["final_answer"] = draft
-        print(f"[Critic] Accepted answer (retry_count={retry_count})")
+        logger.info("[Critic] Accepted answer (retry_count=%d)", retry_count)
     else:
         state["retry_count"] = retry_count + 1
         state["question"] = state["question"] + " Please be more specific and detailed."
-        print(f"[Critic] Rejected, retrying (retry_count={state['retry_count']})")
+        logger.info("[Critic] Rejected, retrying (retry_count=%d)", state["retry_count"])
 
     return state
 
