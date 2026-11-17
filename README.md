@@ -1,6 +1,6 @@
 # SmartPaper AI
 
-> Upload a research paper. Ask questions in plain language. Get answers grounded in the paper's text, tables **and** figures — each one citing the page it came from.
+> Upload a research paper. Ask questions in plain language. Get answers grounded in the paper's text, tables **and** figures, each one citing the page it came from.
 
 **Live app:** https://huggingface.co/spaces/LINGESH-7/AI-RESEARCH-PAPER-QA  
 **Fine-tuned model:** https://huggingface.co/LINGESH-7/Phi-3-mini-4k-instruct-FT-ON-QASPER
@@ -41,15 +41,15 @@ Real output, from a 20-page IEEE Access paper on ectopic pregnancy diagnosis:
 
 | Layer | Choice |
 |---|---|
-| **UI** | Streamlit — chat, background jobs, live progress |
+| **UI** | Streamlit: chat, background jobs, live progress |
 | **Agent workflow** | LangGraph state machine, 5 nodes with a retry loop |
 | **Retrieval** | ChromaDB + LangChain `MultiVectorRetriever` |
 | **Embeddings** | `all-MiniLM-L6-v2` (sentence-transformers, CPU) |
-| **PDF parsing** | `unstructured` `hi_res` — layout detection + OCR |
+| **PDF parsing** | `unstructured` `hi_res`: layout detection + OCR |
 | **Reasoning LLM** | Llama-class model via OpenRouter, with a Groq fallback |
-| **Vision LLM** | Gemini 2.5 Flash — figures and table images |
+| **Vision LLM** | Gemini 2.5 Flash, for figures and table images |
 | **Summarisation** | `gpt-oss-120b` via Groq |
-| **Fine-tuning** | Phi-3 Mini + QLoRA on QASPER (Unsloth) — a separate experiment |
+| **Fine-tuning** | Phi-3 Mini + QLoRA on QASPER (Unsloth), a separate experiment |
 
 ---
 
@@ -70,7 +70,7 @@ PDF ─► layout model (unstructured hi_res)
           raw content ──────────────────────────────► on-disk store
 ```
 
-The retrieval pattern is **multi-vector**: *summaries* are embedded and searched, but the *raw content* — the passage, the table, the figure image — is what reaches the model. A short summary is a better search target than a wall of table cells; the raw table is a better answer source.
+The retrieval pattern is **multi-vector**: *summaries* are embedded and searched, but the *raw content* (the passage, the table, the figure image) is what reaches the model. A short summary is a better search target than a wall of table cells; the raw table is a better answer source.
 
 ### Answering
 
@@ -109,35 +109,35 @@ graph TD;
 
 These are the problems that took the most work to find and fix. Each was discovered by running real papers, not by reading the code.
 
-**The parser was throwing away the paper.** The first version kept only `NarrativeText` elements. On a real IEEE paper that discarded the *abstract* and every bulleted list (the layout model calls them `ListItem`), the title and all 40 headings (`Title`) — while keeping "VOLUME 14, 2026" and the page number from every page. It also treated all 37 image crops as figures, 24 of which were the journal logo repeated per page, or author portraits. Now: content categories are kept, repeated short lines are detected as boilerplate and dropped, and a crop is only a figure if it earns it.
+**The parser was throwing away the paper.** The first version kept only `NarrativeText` elements. On a real IEEE paper that discarded the *abstract* and every bulleted list (the layout model calls them `ListItem`), the title and all 40 headings (`Title`), while keeping "VOLUME 14, 2026" and the page number from every page. It also treated all 37 image crops as figures, 24 of which were the journal logo repeated per page, or author portraits. Now: content categories are kept, repeated short lines are detected as boilerplate and dropped, and a crop is only a figure if it earns it.
 
-**Captions must be matched by position, not reading order.** In a two-column layout the model can emit two figures and then their two captions — in the wrong order. Captions are matched to the nearest figure or table *on the page*, using element coordinates, within a gap threshold.
+**Captions must be matched by position, not reading order.** In a two-column layout the model can emit two figures and then their two captions, in the wrong order. Captions are matched to the nearest figure or table *on the page*, using element coordinates, within a gap threshold.
 
-**Similarity search fails on questions about the paper as a whole.** "What is this paper about and who wrote it?" retrieved pages of the *reference list* — dense with the paper's own keywords — and never the title page. Two fixes: the reference list is tagged at parse time and excluded unless you ask about citations, and the title/abstract are pinned to every question's context.
+**Similarity search fails on questions about the paper as a whole.** "What is this paper about and who wrote it?" retrieved pages of the *reference list*, dense with the paper's own keywords, and never the title page. Two fixes: the reference list is tagged at parse time and excluded unless you ask about citations, and the title/abstract are pinned to every question's context.
 
 **Free-tier limits shaped the architecture.** Three providers, each used only for what its limits allow:
 
-- OpenRouter free models: **50 requests/day** — enough for questions (2–3 each), nowhere near one paper's ~75 summaries.
-- Gemini free tier: **~20 requests/day** — so vision is spent *only* on answering figure and table questions, never on describing figures at upload. A figure-heavy paper used to burn the entire daily quota during a single upload, then drop 33 of 37 figures as "unsearchable".
-- Groq: limited per *minute*, not per day — so it carries the bulk summarisation, at a concurrency tuned by measurement (at 3, a 76-passage paper drew more rate-limit errors than successes).
+- OpenRouter free models: **50 requests/day**, enough for questions (2 or 3 each), nowhere near one paper's ~75 summaries.
+- Gemini free tier: **~20 requests/day**, so vision is spent *only* on answering figure and table questions, never on describing figures at upload. A figure-heavy paper used to burn the entire daily quota during a single upload, then drop 33 of 37 figures as "unsearchable".
+- Groq: limited per *minute*, not per day, so it carries the bulk summarisation, at a concurrency tuned by measurement (at 3, a 76-passage paper drew more rate-limit errors than successes).
 
 Every path degrades instead of failing: OpenRouter exhausted → Groq answers; Gemini unavailable → the answer comes from captions and extracted text, and says so; a summary rate-limited → retried after a pause, then falls back to indexing the raw text.
 
 **A long ingestion cannot live inside a Streamlit script.** Streamlit stops the script on any click or refresh, which would kill a 4-minute ingestion. It runs in a worker thread that the page polls, so the paper lands in the library even if the visitor closes the tab.
 
-**Bugs worth remembering:** `ChatOpenRouter`'s timeout is in *milliseconds* while the other clients use seconds — passing seconds made every request time out and look like a multi-minute hang. And `st.session_state.keys` is the mapping's built-in method, so a session key named `keys` is never `None`.
+**Bugs worth remembering:** `ChatOpenRouter`'s timeout is in *milliseconds* while the other clients use seconds, so passing seconds made every request time out and look like a multi-minute hang. And `st.session_state.keys` is the mapping's built-in method, so a session key named `keys` is never `None`.
 
 ---
 
 ## Quality
 
-**156 offline tests** — no API calls, no keys, fake LLMs with a real ChromaDB and a real on-disk store:
+**156 offline tests**, with no API calls, no keys, fake LLMs with a real ChromaDB and a real on-disk store:
 
 ```bash
 uv run pytest
 ```
 
-They cover the parser (what a real paper's layout elements become), retrieval (modality guarantees, label lookup, reference exclusion), the agent graph (retries, fallbacks, follow-ups), ingestion (reuse, eviction, partial and total provider failure), and the Streamlit UI driven headlessly through every state — including that **API keys never appear in the page or in an error message**.
+They cover the parser (what a real paper's layout elements become), retrieval (modality guarantees, label lookup, reference exclusion), the agent graph (retries, fallbacks, follow-ups), ingestion (reuse, eviction, partial and total provider failure), and the Streamlit UI driven headlessly through every state, including that **API keys never appear in the page or in an error message**.
 
 A separate script runs the whole thing against the real providers:
 
@@ -156,14 +156,15 @@ git clone https://github.com/Lingesh-7/SmartPaper-Ai
 cd SmartPaper-Ai
 
 uv sync
-cp .env.example .env          # optional: your keys, for local use
+# optional, for local use: put your three keys in a .env file
+# (OPENROUTER_API_KEY, GOOGLE_API_KEY, GROQ_API_KEY)
 
 uv run streamlit run streamlit_app.py
 ```
 
 Open http://localhost:8501. Without keys in `.env`, the app asks for them in the browser. All three providers have a free tier: [OpenRouter](https://openrouter.ai/keys), [Google AI Studio](https://aistudio.google.com/apikey), [Groq](https://console.groq.com/keys).
 
-Keys live only in the browser session on the server — never written to disk, never logged. To host it yourself, see [DEPLOYMENT.md](DEPLOYMENT.md).
+Keys live only in the browser session on the server, never written to disk, never logged. To host it yourself, see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ---
 
@@ -171,7 +172,7 @@ Keys live only in the browser session on the server — never written to disk, n
 
 ```
 ├── streamlit_app.py        UI only
-├── pipeline.py             ingest / answer / summarise — the application layer
+├── pipeline.py             ingest / answer / summarise (the application layer)
 ├── config.py               models, limits, paths, API-key handling
 ├── parsers/pdf_parser.py   layout elements → chunks, tables, figures
 ├── embeddings/
@@ -192,7 +193,7 @@ Keys live only in the browser session on the server — never written to disk, n
 
 ## The fine-tuning experiment
 
-Alongside the app, I fine-tuned **Phi-3 Mini (3.8B)** with **QLoRA** on **QASPER** (1,926 question–answer pairs from 888 NLP papers) using Unsloth on a Colab T4 — rank 16, alpha 32, on `q_proj`/`v_proj`, 6.3M trainable parameters (0.16%), 1 epoch in ~15 minutes.
+Alongside the app, I fine-tuned **Phi-3 Mini (3.8B)** with **QLoRA** on **QASPER** (1,926 question and answer pairs from 888 NLP papers) using Unsloth on a Colab T4: rank 16, alpha 32, on `q_proj`/`v_proj`, 6.3M trainable parameters (0.16%), 1 epoch in ~15 minutes.
 
 **It is not used by the app, and the honest reason is that it did not beat the base model:** on 20 held-out QASPER questions, keyword overlap with the reference answer was **13.7%** for the fine-tuned model against **14.6%** for the base. It also produces short extractive answers with no citations, was trained on ≤1,000 characters of context where the app sends ~12,000, and needs a CUDA GPU the free hosting does not have.
 
@@ -204,7 +205,7 @@ The notebook is [`FT-For-RQA.ipynb`](FT-For-RQA.ipynb). To run the model yoursel
 
 ## Known limits
 
-- The paper library lives on the host's disk and in one process — fine for a single instance, not for a horizontally scaled deployment.
+- The paper library lives on the host's disk and in one process, fine for a single instance, not for a horizontally scaled deployment.
 - Papers are shared between visitors by file hash; there is no per-user isolation.
 - Chat history is per browser session and is not persisted.
 - Scanned PDFs without a text layer are rejected rather than OCR'd end to end.
@@ -213,6 +214,6 @@ The notebook is [`FT-For-RQA.ipynb`](FT-For-RQA.ipynb). To run the model yoursel
 
 ## License
 
-MIT — intended for research and educational purposes.
+MIT, intended for research and educational purposes.
 
 © 2026 Lingesh R

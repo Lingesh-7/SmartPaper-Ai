@@ -4,8 +4,9 @@ version = "1.0.0"
 description = "Multi-agent, multimodal research-paper Q&A assistant (Streamlit)."
 readme = "README.md"
 requires-python = ">=3.13"
-# Only what the running app imports. requirements.txt (used by the
-# Dockerfile) is generated from this list - see the header of that file.
+# Only what the running app imports. Streamlit Community Cloud installs
+# from uv.lock; requirements.txt is generated from this list for
+# pip-based hosts - see the header of that file.
 dependencies = [
     "chromadb>=1.5.9",
     "httpx>=0.28",

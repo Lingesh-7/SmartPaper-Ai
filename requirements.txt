@@ -1,4 +1,5 @@
-# Pinned dependencies for the Docker image (Linux x86_64, Python 3.13, CPU-only torch).
+# Pinned dependencies for pip-based hosts (Linux x86_64, Python 3.13, CPU-only torch).
+# Streamlit Community Cloud does not use this file; it installs from uv.lock.
 #
 # GENERATED from pyproject.toml - do not edit by hand. Versions are
 # pinned to the ones the app was verified with. To regenerate:

@@ -1,9 +1,7 @@
-# Streamlit settings shared by every way of running the app: locally,
-# on Streamlit Community Cloud, and in the Docker image.
+# Streamlit settings for both local runs and Streamlit Community Cloud.
 #
-# Port and bind address are deliberately NOT set here: Community Cloud
-# and the Dockerfile each supply their own, and a value in this file
-# could fight with the host's.
+# Port and bind address are deliberately NOT set here: the host supplies
+# its own, and a value in this file could fight with it.
 
 [server]
 headless = true

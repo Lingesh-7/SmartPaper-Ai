@@ -38,3 +38,7 @@ data/
 
 # Test / tool caches
 .pytest_cache/
+
+# Claude Code project notes and the env template: kept locally, not in the repo
+CLAUDE.md
+.env.example

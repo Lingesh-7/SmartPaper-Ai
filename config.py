@@ -189,9 +189,9 @@ MAX_STORED_PAPERS = _env_int("SMARTPAPER_MAX_STORED_PAPERS", 50)
 # --- Storage paths ---
 # Everything the app writes lives under one directory, so a host only
 # has to make one path writable (or mount one volume). The default is
-# ./data next to this file, which works on Windows, Linux and in the
-# Docker image alike; set SMARTPAPER_DATA_DIR to move it (for example
-# to /data on a Hugging Face Space with persistent storage).
+# ./data next to this file, which works on Windows and Linux alike;
+# set SMARTPAPER_DATA_DIR to move it (for example to a host's
+# persistent-storage path).
 DATA_DIR = Path(os.getenv("SMARTPAPER_DATA_DIR") or (_REPO_ROOT / "data")).resolve()
 CHROMA_PERSIST_DIR = str(DATA_DIR / "chroma")
 CHROMA_COLLECTION_NAME = "mm_rag"

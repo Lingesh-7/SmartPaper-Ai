@@ -169,7 +169,7 @@ def render_key_help() -> None:
         "All three providers have a free tier:"
     )
     for _, label, purpose, url in KEY_FIELDS:
-        st.markdown(f"- [{label}]({url}) — {purpose}")
+        st.markdown(f"- [{label}]({url}): {purpose}")
     st.caption(
         "Your keys are kept only in this browser tab's session on the server. "
         "They are not saved to disk or written to logs, and are gone when you close the tab."
