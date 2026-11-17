@@ -1,303 +1,218 @@
----
-title: SmartPaper AI
-emoji: 📄
-colorFrom: indigo
-colorTo: blue
-sdk: docker
-app_port: 7860
-pinned: false
-license: mit
-short_description: Ask questions about a research paper, with page citations
----
-
 # SmartPaper AI
+
+> Upload a research paper. Ask questions in plain language. Get answers grounded in the paper's text, tables **and** figures — each one citing the page it came from.
 
 **Live app:** https://huggingface.co/spaces/LINGESH-7/AI-RESEARCH-PAPER-QA  
 **Fine-tuned model:** https://huggingface.co/LINGESH-7/Phi-3-mini-4k-instruct-FT-ON-QASPER
 
-> Upload a research paper, ask questions in plain language, and get answers grounded in the paper's text, tables **and** figures — each one citing the page it came from.
-
-SmartPaper AI is a multi-agent, multimodal RAG assistant built with **Streamlit**, **LangGraph**, **ChromaDB** and **Unstructured**.
+A multimodal RAG assistant with an agentic LangGraph workflow, built with **Streamlit**, **LangChain**, **ChromaDB** and **Unstructured**. Every visitor uses their own API keys, so the app costs nothing to host.
 
 ---
 
 ## What it does
 
-| | |
+Reading a paper to find one number is slow. Asking a general chatbot about a PDF gives you a confident answer you cannot check. SmartPaper AI answers from the paper itself and shows you exactly where each answer came from.
+
+Real output, from a 20-page IEEE Access paper on ectopic pregnancy diagnosis:
+
+> **Q: Which model performed best, and what accuracy did it achieve?**
+> *`table_query` · sources: Table 3 (p11), Table 2 (p11), text (p16)*
+>
+> Based on Table 3 and the discussion in the study, the best-performing model was **LGBM DART**, which achieved an accuracy of **0.9161** (page 11).
+
+> **Q: Explain Figure 9.**
+> *`figure_query` · sources: Figure 9 (p13), Figure 2 (p8), Figure 3 (p8)*
+>
+> Figure 9 (page 13) displays the ROC curves of the evaluated models across four conditions (Ectopic Pregnancy, Spontaneous Abortion, Unhealthy Pregnancy, Healthy Pregnancy) against a random baseline (AUC = 0.50). LightGBM DART reaches a macro AUC of ≈0.941, with AUC = 0.996 for ectopic pregnancy and 0.883 for spontaneous abortion …
+
+| Capability | How |
 |---|---|
-| **Reads the whole paper** | A layout model (`unstructured`, `hi_res`) extracts sections, lists, tables and figures. Running headers, page numbers, journal logos and author portraits are discarded. |
-| **Answers with citations** | Every answer cites pages, e.g. `(page 7)`, and shows the exact passages, tables and figures it used. |
-| **Understands tables and figures** | A question about a table is answered from the table (the model is shown the table image); a question about a figure is answered from the figure. |
-| **Knows figures and tables by number** | Captions are matched to their figure or table, so "Explain Figure 9" or "What does Table 4 report?" fetches exactly that one. |
-| **Knows what the paper is** | The title, authors and abstract accompany every question, and the reference list is searched only when you ask about references. |
-| **Follows the conversation** | "Explain that more simply" is rewritten into a standalone question before the paper is searched. |
-| **Remembers papers** | A paper is processed once. Uploading the same PDF again — by anyone — opens it instantly. |
-| **Bring your own keys** | Each visitor uses their own API keys. Keys stay in the browser session and are never stored. |
+| **Reads the whole paper** | A layout model extracts sections, lists, tables and figures. Running headers, page numbers, journal logos and author portraits are discarded. |
+| **Cites its sources** | Answers cite pages (`page 7`), and the UI shows the passages, table images and figures the answer used. |
+| **Understands tables and figures** | A question about a table is answered from the table image; a question about a figure is answered from the figure. |
+| **Knows them by number** | Captions are matched to their figure or table, so "Explain Figure 9" fetches exactly that one. |
+| **Follows a conversation** | "Explain that more simply" is rewritten into a standalone question before the paper is searched. |
+| **Checks its own answers** | A critic agent rejects thin or evasive answers and retries with a wider search. |
+| **Remembers papers** | A paper is processed once, keyed by file hash. Re-uploading it opens instantly. |
 
 ---
 
-## Bring your own keys
+## Tech stack
 
-The app needs three keys. All three providers have a free tier.
-
-| Key | Used for | Get one |
-|---|---|---|
-| **OpenRouter** | Answering questions (free model `nvidia/nemotron-3-ultra-550b-a55b:free`) | https://openrouter.ai/keys |
-| **Google AI Studio** | Looking at a figure or table image when you ask about one (`gemini-2.5-flash`) | https://aistudio.google.com/apikey |
-| **Groq** | Summarising the paper at upload (`openai/gpt-oss-120b`) | https://console.groq.com/keys |
-
-Why three — each free tier is used only for what it can carry:
-
-- **OpenRouter** free models allow **50 requests per day** per key (1,000 once the account has bought 10 credits). A question costs 2–3 requests, but uploading one paper needs about 75 summaries — so summarising runs on Groq, whose free tier is limited per minute rather than per day. If the OpenRouter allowance runs out, questions are answered by the Groq model instead of failing.
-- **Gemini 2.5 Flash**'s free tier allows about **20 requests per day**. So nothing is spent on it at upload — figures are indexed by their captions and the text printed in them — and it is used only when a question is about a figure or a table. If that allowance runs out, the question is still answered from captions and extracted text, and the answer says so.
+| Layer | Choice |
+|---|---|
+| **UI** | Streamlit — chat, background jobs, live progress |
+| **Agent workflow** | LangGraph state machine, 5 nodes with a retry loop |
+| **Retrieval** | ChromaDB + LangChain `MultiVectorRetriever` |
+| **Embeddings** | `all-MiniLM-L6-v2` (sentence-transformers, CPU) |
+| **PDF parsing** | `unstructured` `hi_res` — layout detection + OCR |
+| **Reasoning LLM** | Llama-class model via OpenRouter, with a Groq fallback |
+| **Vision LLM** | Gemini 2.5 Flash — figures and table images |
+| **Summarisation** | `gpt-oss-120b` via Groq |
+| **Fine-tuning** | Phi-3 Mini + QLoRA on QASPER (Unsloth) — a separate experiment |
 
 ---
 
 ## How it works
 
+### Ingestion
+
 ```
-Upload                                           Ask
-──────                                           ───
-PDF                                              question (+ chat history)
- │  unstructured hi_res                           │
- ├── text by section ┐                            ▼
- ├── tables + caption┼─ summarise ─► embed     contextualizer  rewrite a follow-up as a standalone question
- └── figures+caption ┘  (Groq; figures  index      │
-                         by caption)    texts      │
-                                      │           ▼
-                                      ▼         planner         text / table / figure question?
-                              ChromaDB (vectors)   │
-                              + paper store        ▼
-                              (raw content,     retriever       named figure/table first ("Figure 9"),
-                               page numbers)       │            then tables/figures for table/figure
-                                                   ▼            questions, then the best passages
-                                                reasoner        OpenRouter (text); Gemini looks at the
-                                                   │            image for figure/table questions
-                                                   │
-                                                   ▼
-                                                 critic ── too thin / a refusal? retry (max 2)
-                                                   │
-                                                   ▼
-                                           answer + cited sources
+PDF ─► layout model (unstructured hi_res)
+       │
+       ├── text ───────► section-aware chunks (page ranges kept)
+       ├── tables ─────► cells + caption + a cropped image of the table
+       └── figures ────► crop + caption + the text printed inside it
+                         │
+                         ▼
+          summarise text & tables (Groq) ──► embed ──► ChromaDB
+                                                       (one collection per paper)
+          raw content ──────────────────────────────► on-disk store
 ```
 
-The retrieval pattern is **multi-vector**: *summaries* are what gets embedded and searched, the *raw content* (passage, table, figure) is what gets returned to the model.
+The retrieval pattern is **multi-vector**: *summaries* are embedded and searched, but the *raw content* — the passage, the table, the figure image — is what reaches the model. A short summary is a better search target than a wall of table cells; the raw table is a better answer source.
+
+### Answering
+
+```mermaid
+graph TD;
+	__start__([start]):::first
+	contextualizer(contextualizer)
+	planner(planner)
+	retriever(retriever)
+	reasoner(reasoner)
+	critic(critic)
+	__end__([end]):::last
+	__start__ --> contextualizer;
+	contextualizer --> planner;
+	critic -. end .-> __end__;
+	critic -. retry .-> retriever;
+	planner --> retriever;
+	reasoner --> critic;
+	retriever --> reasoner;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
+```
+
+| Node | Job |
+|---|---|
+| **contextualizer** | Rewrites a follow-up into a standalone question using the chat history. No history → no LLM call. |
+| **planner** | Classifies the question as text / table / figure. This *steers* what happens next. |
+| **retriever** | Fetches a named figure or table first ("Figure 9"), then the best-matching records of the classified type, then the best passages. The paper's title and abstract ride along with every question. |
+| **reasoner** | Labels each piece of context with its page and asks for citations. Routes to the vision model only when a figure or table image is in play. |
+| **critic** | Accepts the answer, or sends it back for a retry with a wider search (max 2). |
 
 ---
 
-## Run it locally
+## Engineering decisions worth reading
 
-Requires Python 3.13, [uv](https://docs.astral.sh/uv/), and for PDF parsing `tesseract` (and `poppler`) on your PATH.
+These are the problems that took the most work to find and fix. Each was discovered by running real papers, not by reading the code.
+
+**The parser was throwing away the paper.** The first version kept only `NarrativeText` elements. On a real IEEE paper that discarded the *abstract* and every bulleted list (the layout model calls them `ListItem`), the title and all 40 headings (`Title`) — while keeping "VOLUME 14, 2026" and the page number from every page. It also treated all 37 image crops as figures, 24 of which were the journal logo repeated per page, or author portraits. Now: content categories are kept, repeated short lines are detected as boilerplate and dropped, and a crop is only a figure if it earns it.
+
+**Captions must be matched by position, not reading order.** In a two-column layout the model can emit two figures and then their two captions — in the wrong order. Captions are matched to the nearest figure or table *on the page*, using element coordinates, within a gap threshold.
+
+**Similarity search fails on questions about the paper as a whole.** "What is this paper about and who wrote it?" retrieved pages of the *reference list* — dense with the paper's own keywords — and never the title page. Two fixes: the reference list is tagged at parse time and excluded unless you ask about citations, and the title/abstract are pinned to every question's context.
+
+**Free-tier limits shaped the architecture.** Three providers, each used only for what its limits allow:
+
+- OpenRouter free models: **50 requests/day** — enough for questions (2–3 each), nowhere near one paper's ~75 summaries.
+- Gemini free tier: **~20 requests/day** — so vision is spent *only* on answering figure and table questions, never on describing figures at upload. A figure-heavy paper used to burn the entire daily quota during a single upload, then drop 33 of 37 figures as "unsearchable".
+- Groq: limited per *minute*, not per day — so it carries the bulk summarisation, at a concurrency tuned by measurement (at 3, a 76-passage paper drew more rate-limit errors than successes).
+
+Every path degrades instead of failing: OpenRouter exhausted → Groq answers; Gemini unavailable → the answer comes from captions and extracted text, and says so; a summary rate-limited → retried after a pause, then falls back to indexing the raw text.
+
+**A long ingestion cannot live inside a Streamlit script.** Streamlit stops the script on any click or refresh, which would kill a 4-minute ingestion. It runs in a worker thread that the page polls, so the paper lands in the library even if the visitor closes the tab.
+
+**Bugs worth remembering:** `ChatOpenRouter`'s timeout is in *milliseconds* while the other clients use seconds — passing seconds made every request time out and look like a multi-minute hang. And `st.session_state.keys` is the mapping's built-in method, so a session key named `keys` is never `None`.
+
+---
+
+## Quality
+
+**156 offline tests** — no API calls, no keys, fake LLMs with a real ChromaDB and a real on-disk store:
 
 ```bash
-git clone https://github.com/Lingesh-7/SmartPaper-Ai
-cd SmartPaper-Ai
-
-uv sync                       # install dependencies from uv.lock
-cp .env.example .env          # optional: put your three keys in .env
-
-uv run streamlit run streamlit_app.py
+uv run pytest
 ```
 
-Open http://localhost:8501. With keys in `.env` the app uses them directly; without, it asks for them in the browser.
+They cover the parser (what a real paper's layout elements become), retrieval (modality guarantees, label lookup, reference exclusion), the agent graph (retries, fallbacks, follow-ups), ingestion (reuse, eviction, partial and total provider failure), and the Streamlit UI driven headlessly through every state — including that **API keys never appear in the page or in an error message**.
 
-### Tests
+A separate script runs the whole thing against the real providers:
 
 ```bash
-uv run pytest                 # offline test suite: no API calls, no keys needed
-
-# Manual end-to-end check against the real providers (needs keys in .env;
-# uses ~17 of a free OpenRouter key's 50 daily requests):
 uv run python test_pipeline.py attention-is-all-you-need-Paper.pdf
 ```
 
 ---
 
-## Deploy to Streamlit Community Cloud
+## Run it locally
 
-The repository is ready to deploy as it is.
-
-1. Push the repository to GitHub.
-2. Go to https://share.streamlit.io → **Create app** → **Deploy a public app from GitHub**.
-3. Choose the repository and branch, and set **Main file path** to `streamlit_app.py`.
-4. Open **Advanced settings** and choose **Python 3.13**. Leave **Secrets** empty.
-5. Click **Deploy**. The first build takes several minutes (it installs PyTorch).
-
-**Leave Secrets empty.** With no keys on the server, every visitor enters their own. If you add the three API keys as secrets, every visitor spends yours.
-
-What the platform reads from this repository:
-
-| File | Purpose |
-|---|---|
-| `streamlit_app.py` | The app |
-| `uv.lock` (with `pyproject.toml`) | Python dependencies, pinned, with CPU-only PyTorch |
-| `packages.txt` | System packages for PDF parsing: `poppler-utils`, `tesseract-ocr`, `libgl1`, `libglib2.0-0` |
-| `.streamlit/config.toml` | Upload limit, theme |
-
-Good to know:
-
-- **Memory is the risk.** Community Cloud gives an app roughly 2.7 GB of RAM. PyTorch plus the layout model use a large share of that, so a long or image-heavy PDF can push the app over the limit and restart it. If that happens, lower `SMARTPAPER_MAX_PDF_PAGES` (set it under **Secrets** as `SMARTPAPER_MAX_PDF_PAGES = "20"`), or use the Docker route below, which has 16 GB.
-- **First upload after a restart is slower**: the embedding and layout models are downloaded on first use.
-- **Storage is temporary.** The paper library is emptied whenever the app restarts or goes to sleep.
-- **One upload at a time:** a second visitor sees "yours is next in line".
-
----
-
-## Deploy with Docker (Hugging Face Spaces or any host)
-
-The repository is also a ready-to-build **Docker Space** (the block at the top of this file is the Space configuration), for when the app needs more memory than Community Cloud offers.
-
-1. Create a new Space → **SDK: Docker** → blank template.
-2. Push this repository to the Space:
-   ```bash
-   git remote add space https://huggingface.co/spaces/<your-username>/<space-name>
-   git push space main
-   ```
-3. Wait for the build (several minutes: it installs PyTorch and pre-downloads the models).
-
-**Do not add the three API keys as Space secrets.** With no keys on the server, every visitor enters their own. If you set them, every visitor spends yours.
-
-Good to know:
-
-- **Hardware:** the free CPU tier (2 vCPU, 16 GB) is enough. A 10–15 page paper takes roughly 3–5 minutes to process the first time.
-- **Storage:** a free Space's disk is wiped whenever it restarts or goes to sleep, so the paper library starts empty again. To keep it, add persistent storage to the Space and set the variable `SMARTPAPER_DATA_DIR=/data`.
-- **One upload at a time:** uploads are processed one after another; a second visitor sees "yours is next in line".
-
-Any other Docker host works the same way:
+Needs Python 3.13, [uv](https://docs.astral.sh/uv/), and `tesseract` + `poppler` on PATH for PDF parsing.
 
 ```bash
-docker build -t smartpaper .
-docker run -p 7860:7860 -v smartpaper-data:/home/user/app/data smartpaper
+git clone https://github.com/Lingesh-7/SmartPaper-Ai
+cd SmartPaper-Ai
+
+uv sync
+cp .env.example .env          # optional: your keys, for local use
+
+uv run streamlit run streamlit_app.py
 ```
 
----
+Open http://localhost:8501. Without keys in `.env`, the app asks for them in the browser. All three providers have a free tier: [OpenRouter](https://openrouter.ai/keys), [Google AI Studio](https://aistudio.google.com/apikey), [Groq](https://console.groq.com/keys).
 
-## Configuration
-
-Everything is optional; defaults are in [`config.py`](config.py) and listed in [`.env.example`](.env.example).
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `SMARTPAPER_DATA_DIR` | `./data` | Where papers, vectors and temp files are stored |
-| `SMARTPAPER_OPENROUTER_MODEL` | `nvidia/nemotron-3-ultra-550b-a55b:free` | Model that answers questions |
-| `SMARTPAPER_GROQ_MODEL` | `openai/gpt-oss-120b` | Model that summarises uploads (and the answer fallback) |
-| `SMARTPAPER_GEMINI_MODEL` | `gemini-2.5-flash` | Vision model |
-| `SMARTPAPER_VISION_SUMMARY_BUDGET` | `0` | Figures per paper the vision model may describe at upload to enrich search. Leave at 0 on free keys |
-| `SMARTPAPER_MAX_UPLOAD_MB` | `20` | Largest PDF accepted |
-| `SMARTPAPER_MAX_PDF_PAGES` | `50` | Longest PDF accepted |
-| `SMARTPAPER_MAX_STORED_PAPERS` | `50` | Library size before the least recently used paper is removed |
-| `SMARTPAPER_TOP_K` | `6` | How many passages/tables/figures a question retrieves |
-
-Providers retire models. When one does, the key check in the app says so by name; change the matching variable — no code change needed.
+Keys live only in the browser session on the server — never written to disk, never logged. To host it yourself, see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ---
 
 ## Project structure
 
 ```
-├── streamlit_app.py        Streamlit UI (presentation only)
-├── pipeline.py             ingest_pdf / answer_question / summarize_paper - what the UI calls
+├── streamlit_app.py        UI only
+├── pipeline.py             ingest / answer / summarise — the application layer
 ├── config.py               models, limits, paths, API-key handling
-├── parsers/pdf_parser.py   unstructured hi_res -> text, tables, figures (+ page numbers)
+├── parsers/pdf_parser.py   layout elements → chunks, tables, figures
 ├── embeddings/
-│   ├── embedder.py         summarise, embed, build the multi-vector retriever
-│   ├── retriever.py        typed retrieval, table/figure guarantee
-│   └── store.py            on-disk paper store (raw content + manifest)
+│   ├── embedder.py         summarise, embed, build the retriever
+│   ├── retriever.py        typed retrieval with modality + label guarantees
+│   └── store.py            on-disk paper store
 ├── agents/
 │   ├── nodes.py            contextualizer, planner, retriever, reasoner, critic
 │   └── graph.py            LangGraph wiring
 ├── models/
-│   ├── llm_clients.py      per-visitor LLM clients, key + model checks
-│   └── finetuned_reader.py QLoRA Phi-3 reader (optional, needs a GPU - see below)
-├── tests/                  offline test suite (pytest)
-├── test_pipeline.py        manual end-to-end script against real providers
-├── FT-For-RQA.ipynb        how the Phi-3 reader was fine-tuned (Colab)
-├── Dockerfile              Hugging Face Spaces / any Docker host
-├── requirements.txt        pinned Linux dependencies for the Dockerfile (generated)
-└── pyproject.toml, uv.lock dependencies for local development
+│   ├── llm_clients.py      per-visitor clients, key + model validation
+│   └── finetuned_reader.py the QLoRA Phi-3 reader (optional, GPU)
+├── tests/                  156 offline tests
+└── FT-For-RQA.ipynb        the fine-tuning notebook
 ```
 
 ---
 
-## Using the fine-tuned Phi-3 reader (optional)
+## The fine-tuning experiment
 
-The repository also contains a small research-QA model: **Phi-3 Mini (3.8B) fine-tuned with QLoRA on QASPER**. The app does **not** use it — answers come from OpenRouter, Gemini and Groq — because it needs a GPU and the app is built for CPU hosting. This section is for anyone who wants to run that model themselves.
+Alongside the app, I fine-tuned **Phi-3 Mini (3.8B)** with **QLoRA** on **QASPER** (1,926 question–answer pairs from 888 NLP papers) using Unsloth on a Colab T4 — rank 16, alpha 32, on `q_proj`/`v_proj`, 6.3M trainable parameters (0.16%), 1 epoch in ~15 minutes.
 
-- Adapter on the Hub: [`Lingesh-7/phi-3-mini-4k-instruct-FT-ON-QASPER`](https://huggingface.co/Lingesh-7/phi-3-mini-4k-instruct-FT-ON-QASPER) (LoRA weights only, 25 MB)
-- Training notebook: [`FT-For-RQA.ipynb`](FT-For-RQA.ipynb)
-- Loader: [`models/finetuned_reader.py`](models/finetuned_reader.py)
+**It is not used by the app, and the honest reason is that it did not beat the base model:** on 20 held-out QASPER questions, keyword overlap with the reference answer was **13.7%** for the fine-tuned model against **14.6%** for the base. It also produces short extractive answers with no citations, was trained on ≤1,000 characters of context where the app sends ~12,000, and needs a CUDA GPU the free hosting does not have.
 
-### What you need
+What I would change next: more epochs, full-paper context rather than title + abstract, more LoRA target modules, and an evaluation metric better than keyword overlap.
 
-- An **NVIDIA GPU with CUDA** and about 4 GB of free VRAM (the base model is loaded in 4-bit). It will not run on CPU or on a free Hugging Face Space. A free Google Colab T4 works.
-- Linux or Colab is the easiest route; Unsloth's Windows support is limited.
+The notebook is [`FT-For-RQA.ipynb`](FT-For-RQA.ipynb). To run the model yourself, see [DEPLOYMENT.md](DEPLOYMENT.md#running-the-fine-tuned-phi-3-reader).
 
-### 1. Install
+---
 
-The simplest route is **Google Colab with a T4 GPU**: open `FT-For-RQA.ipynb` and run the install cell at the top.
+## Known limits
 
-On your own GPU machine, use a separate environment from the app's. The app's environment pins CPU-only PyTorch (so that it fits on free hosting), and this model needs the CUDA build:
-
-```bash
-python -m venv .venv-gpu && source .venv-gpu/bin/activate
-pip install unsloth python-dotenv       # installs CUDA PyTorch with it
-```
-
-### 2. Ask it a question
-
-Run from the repository root:
-
-```python
-from models.finetuned_reader import generate_answer
-
-context = (
-    "Retrieval-Augmented Generation combines parametric and non-parametric memory "
-    "for language generation using a pre-trained seq2seq model and a dense vector "
-    "index of Wikipedia."
-)
-print(generate_answer("What does RAG stand for?", context))
-# -> Retrieval-Augmented Generation
-```
-
-The first call downloads the base model (about 2.3 GB) and the adapter, then keeps them in memory. To load a different adapter, set `FINETUNED_MODEL_REPO` in `.env`.
-
-### 3. Prompt format
-
-The model was trained on plain text in exactly this shape, not on Phi-3's chat template — use the same shape if you call it without the loader:
-
-```
-Context: <text>
-
-Question: <question>
-
-Answer:
-```
-
-It tends to keep writing further `Question:` / `Answer:` pairs, so stop generation at the string `Question:` (the loader does this for you).
-
-### How it was trained
-
-| | |
-|---|---|
-| **Base model** | `unsloth/Phi-3-mini-4k-instruct`, 4-bit |
-| **Method** | QLoRA via Unsloth — rank 16, alpha 32, dropout 0.05, on `q_proj` and `v_proj` (6.3M trainable parameters, 0.16%) |
-| **Data** | `allenai/qasper` train split: 1,926 question–answer pairs from 888 NLP papers |
-| **Context per example** | paper title + abstract, cut to 1,000 characters |
-| **Training** | 1 epoch (241 steps), batch 2 × 4 accumulation, learning rate 2e-5, on a Tesla T4 (about 15 minutes) |
-
-To retrain or change any of this, open `FT-For-RQA.ipynb` in Colab with a GPU runtime and run it top to bottom. Where it uploads to the Hub, put your own Hugging Face token in place of `YOUR_HF_TOKEN` and your own repository name.
-
-### What to expect
-
-- **Short, extractive answers** — a phrase or a sentence, in the style of QASPER's reference answers. No page citations.
-- **Short contexts only.** It saw at most ~1,000 characters of context in training; give it one passage, not a whole paper.
-- **Text only** — it cannot read tables or figures.
-- **Measured result:** on 20 held-out QASPER questions, keyword overlap with the reference answer was 13.7% for the fine-tuned model and 14.6% for the base model, so this training run did not improve on the base. More epochs, full-paper context, and more LoRA target modules are the obvious next experiments.
+- The paper library lives on the host's disk and in one process — fine for a single instance, not for a horizontally scaled deployment.
+- Papers are shared between visitors by file hash; there is no per-user isolation.
+- Chat history is per browser session and is not persisted.
+- Scanned PDFs without a text layer are rejected rather than OCR'd end to end.
 
 ---
 
 ## License
 
-MIT License — intended for research and educational purposes.
+MIT — intended for research and educational purposes.
 
 © 2026 Lingesh R
